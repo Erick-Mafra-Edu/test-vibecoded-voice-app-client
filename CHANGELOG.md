@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/Erick-Mafra-Edu/test-vibecoded-voice-app-client/compare/v0.1.0...v0.1.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* attach Windows executable to GitHub releases ([37cb360](https://github.com/Erick-Mafra-Edu/test-vibecoded-voice-app-client/commit/37cb360c92e7523e5ecc6fa3d053e535871fad81))
+* attach Windows executable to GitHub releases ([b828351](https://github.com/Erick-Mafra-Edu/test-vibecoded-voice-app-client/commit/b828351830ffe178c1daa7880bf97842d54c436b))
+
 ## 0.1.0 (2026-10-19)
 
 
