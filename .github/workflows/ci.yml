@@ -1,0 +1,39 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test signaling
+        run: cargo test --lib --locked
+      - name: Build Windows client
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pulse-windows-${{ github.sha }}
+          path: target/release/pulse.exe
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: googleapis/release-please-action@v5
+        with:
+          release-type: rust
