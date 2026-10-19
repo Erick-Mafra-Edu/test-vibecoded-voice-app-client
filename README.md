@@ -106,17 +106,21 @@ the URL or room, the simulation backend remains active and the offline notice
 explains why token changes cannot connect. Tokens are never stored in the
 repository or logged.
 
-For encrypted voice, chat, and screen sharing, set the same room passphrase in
-each client before starting it:
+With an updated BeamVoice backend, each authenticated member receives the same
+random room key on join. Voice, chat, and screen sharing start without entering
+a phrase. The backend knows this key, so this is server-managed media encryption,
+not strict end-to-end encryption. Use `wss://` outside localhost because plain
+WebSocket exposes the token and room key.
+
+For an older backend without room-key negotiation, the legacy fallback requires
+the same room passphrase in each client before starting it:
 
 ```powershell
 $env:PULSE_E2E_PASSPHRASE = "a shared phrase of at least 16 bytes"
 ```
 
-Each room derives a different key. Share the phrase outside Pulse; anyone who
-knows it can read that room's media and chat. The server only relays ciphertext;
-it still sees participant identities and room membership. Shared passphrases do
-not provide member identity verification or forward secrecy.
+Each legacy room derives a different key. Share the fallback phrase outside
+Pulse; anyone who knows it can read that room's media and chat.
 For connections across NAT, configure `PULSE_ICE_URL` (`stun:`, `turn:`, or
 `turns:`), and when using TURN set `PULSE_ICE_USERNAME` and
 `PULSE_ICE_CREDENTIAL`. The server uses the corresponding `BEAMVOICE_ICE_*`

@@ -203,14 +203,12 @@ pub struct SfuSession {
 impl SfuSession {
     pub async fn start(
         user: String,
-        room: &str,
+        media_key: &[u8; 32],
         input: &str,
         output: &str,
         muted: bool,
     ) -> Result<(Self, Vec<Value>), String> {
-        let passphrase = std::env::var("PULSE_E2E_PASSPHRASE")
-            .map_err(|_| "configure PULSE_E2E_PASSPHRASE to enable voice".to_owned())?;
-        let cipher = Arc::new(Cipher::new(&passphrase, room)?);
+        let cipher = Arc::new(Cipher::from_key(media_key)?);
         let (capture, frames) = audio::start_capture_with_frames(input)?;
         let (playback, playback_frames) = audio::start_playback_with_frames(output)?;
         let (decoded_tx, decoded_rx) = mpsc::channel(256);

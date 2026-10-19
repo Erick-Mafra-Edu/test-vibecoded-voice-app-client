@@ -12,7 +12,18 @@ const NONCE_LEN: usize = 12;
 pub struct Cipher(LessSafeKey);
 
 impl Cipher {
+    #[cfg(test)]
     pub fn new(passphrase: &str, room: &str) -> Result<Self, String> {
+        Self::from_key(&Self::derive_key(passphrase, room)?)
+    }
+
+    pub fn from_key(key: &[u8; 32]) -> Result<Self, String> {
+        let key = UnboundKey::new(&aead::CHACHA20_POLY1305, key)
+            .map_err(|_| "could not initialize end-to-end encryption")?;
+        Ok(Self(LessSafeKey::new(key)))
+    }
+
+    pub fn derive_key(passphrase: &str, room: &str) -> Result<[u8; 32], String> {
         if passphrase.len() < 16 || room.is_empty() {
             return Err(
                 "PULSE_E2E_PASSPHRASE must have at least 16 bytes and PULSE_ROOM must be set"
@@ -20,17 +31,14 @@ impl Cipher {
             );
         }
         let mut key = [0u8; 32];
-        let salt = format!("pulse-room-e2e-v1:{room}");
         pbkdf2::derive(
             pbkdf2::PBKDF2_HMAC_SHA256,
             NonZeroU32::new(210_000).unwrap(),
-            salt.as_bytes(),
+            format!("pulse-room-e2e-v1:{room}").as_bytes(),
             passphrase.as_bytes(),
             &mut key,
         );
-        let key = UnboundKey::new(&aead::CHACHA20_POLY1305, &key)
-            .map_err(|_| "could not initialize end-to-end encryption")?;
-        Ok(Self(LessSafeKey::new(key)))
+        Ok(key)
     }
 
     pub fn seal(&self, publisher: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
@@ -90,5 +98,18 @@ mod tests {
         let mut tampered = packet;
         *tampered.last_mut().unwrap() ^= 1;
         assert!(bob.open("alice", &tampered).is_err());
+    }
+
+    #[test]
+    fn server_issued_room_key_encrypts_for_all_members() {
+        let key = [7u8; 32];
+        let alice = Cipher::from_key(&key).unwrap();
+        let bob = Cipher::from_key(&key).unwrap();
+        let packet = alice.seal("alice", b"shared audio").unwrap();
+        assert_eq!(bob.open("alice", &packet).unwrap(), b"shared audio");
+        assert!(Cipher::from_key(&[8u8; 32])
+            .unwrap()
+            .open("alice", &packet)
+            .is_err());
     }
 }

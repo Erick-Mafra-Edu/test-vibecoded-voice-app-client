@@ -97,9 +97,6 @@ async fn run_signaling(
     events: broadcast::Sender<ClientEvent>,
     mut config: services::signaling::SignalingConfig,
 ) {
-    let chat_cipher = std::env::var("PULSE_E2E_PASSPHRASE")
-        .ok()
-        .and_then(|passphrase| crate::media::e2e::Cipher::new(&passphrase, &config.room).ok());
     'reconnect: loop {
         if config.token.trim().is_empty() {
             let _ = events.send(ClientEvent::ConnectionFailed(
@@ -165,17 +162,33 @@ async fn run_signaling(
             ServerEvent::Joined { user, .. } => user.clone(),
             _ => unreachable!("connect returns a joined event"),
         };
+        let room_key: Result<[u8; 32], String> = match &joined {
+            ServerEvent::Joined { media_key: Some(encoded), .. } => STANDARD
+                .decode(encoded)
+                .map_err(|_| "Chave de mídia inválida recebida do backend.".to_owned())
+                .and_then(|bytes| bytes.try_into().map_err(|_| "Chave de mídia inválida recebida do backend.".to_owned())),
+            _ => std::env::var("PULSE_E2E_PASSPHRASE")
+                .map_err(|_| "Backend sem chave de sala: atualize a imagem Docker ou configure PULSE_E2E_PASSPHRASE.".to_owned())
+                .and_then(|passphrase| crate::media::e2e::Cipher::derive_key(&passphrase, &config.room)),
+        };
+        let chat_cipher = room_key
+            .as_ref()
+            .ok()
+            .and_then(|key| crate::media::e2e::Cipher::from_key(key).ok());
+        state.media.last_error = None;
 
-        let mut sfu = match state
-            .media
-            .selected_input
-            .as_deref()
-            .zip(state.media.selected_output.as_deref())
-        {
-            Some((input, output)) => {
+        let mut sfu = match (
+            &room_key,
+            state
+                .media
+                .selected_input
+                .as_deref()
+                .zip(state.media.selected_output.as_deref()),
+        ) {
+            (Ok(key), Some((input, output))) => {
                 match crate::media::sfu::SfuSession::start(
                     user.clone(),
-                    &config.room,
+                    key,
                     input,
                     output,
                     state.local_user.is_muted || state.local_user.is_deafened,
@@ -200,7 +213,13 @@ async fn run_signaling(
                     }
                 }
             }
-            None => {
+            (Err(error), _) => {
+                state.media.capture_active = false;
+                state.media.last_error = Some(error.clone());
+                let _ = events.send(ClientEvent::MediaError(error.clone()));
+                None
+            }
+            (_, None) => {
                 state.media.capture_active = false;
                 None
             }
@@ -358,7 +377,7 @@ async fn run_signaling(
                                     Err(error) => { let _ = events.send(ClientEvent::ChatError(error)); false }
                                 }
                             } else {
-                                let _ = events.send(ClientEvent::ChatError("Configure PULSE_E2E_PASSPHRASE para enviar mensagens.".into()));
+                                let _ = events.send(ClientEvent::ChatError("Chave de mídia indisponível para enviar mensagens.".into()));
                                 false
                             }
                         } else {
@@ -604,7 +623,7 @@ fn apply_signaling_event(
 ) {
     match event {
         ServerEvent::Authenticated { user } => state.local_user.display_name = user,
-        ServerEvent::Joined { user, members } => {
+        ServerEvent::Joined { user, members, .. } => {
             state.local_user.display_name = user;
             state.joined_voice = true;
             replace_participants(state, members);
