@@ -7,7 +7,9 @@ Windows executable, and uploads it as a workflow artifact for each pull request
 and push to `main`. After a successful build on `main`, Release Please uses
 Conventional Commits (`fix:`, `feat:`, and `feat!:`) to open a release pull
 request. Merging that pull request updates `Cargo.toml` and `Cargo.lock`, then
-creates the matching `vX.Y.Z` tag and GitHub Release. The repository must allow
+creates the matching `vX.Y.Z` tag and GitHub Release with `pulse.exe` attached.
+For builds between releases, download the executable from the Actions run's
+Artifacts section. The repository must allow
 GitHub Actions to create pull requests; the workflow's `GITHUB_TOKEN` needs
 write access to contents and pull requests. The local `.env` and `target/` are
 ignored by Git.
