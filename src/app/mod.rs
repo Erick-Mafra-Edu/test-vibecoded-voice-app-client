@@ -326,6 +326,14 @@ impl PulseApp {
                 self.state.metrics = snapshot.metrics;
                 self.state.chat_messages = snapshot.chat_messages.into_iter().collect();
                 self.state.media = snapshot.media;
+                if self.state.media.screen_frame.is_some() && self.state.mode == AppMode::Normal {
+                    self.state.mode = AppMode::ScreenShare;
+                } else if self.state.media.screen_frame.is_none()
+                    && self.state.mode == AppMode::ScreenShare
+                    && !self.state.local_user.is_screen_sharing
+                {
+                    self.state.mode = AppMode::Normal;
+                }
             }
             ClientEvent::Connected => {
                 self.state.auth_token_error = None;

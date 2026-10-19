@@ -57,7 +57,7 @@ pub fn hud<'a>(metrics: &NetworkMetrics) -> Element<'a, Message> {
         row![
             // Quality dot
             container(text("●").size(10).color(quality_color),).padding([0, 4]),
-            metric("LATENCY", format!("{}ms", metrics.latency_ms), lat_color),
+            metric("RTT", format!("{}ms", metrics.latency_ms), lat_color),
             divider(),
             metric("JITTER", format!("{}ms", metrics.jitter_ms), jit_color),
             divider(),

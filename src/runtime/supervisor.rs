@@ -5,6 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine};
+
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
@@ -95,6 +97,9 @@ async fn run_signaling(
     events: broadcast::Sender<ClientEvent>,
     mut config: services::signaling::SignalingConfig,
 ) {
+    let chat_cipher = std::env::var("PULSE_E2E_PASSPHRASE")
+        .ok()
+        .and_then(|passphrase| crate::media::e2e::Cipher::new(&passphrase, &config.room).ok());
     'reconnect: loop {
         if config.token.trim().is_empty() {
             let _ = events.send(ClientEvent::ConnectionFailed(
@@ -111,7 +116,6 @@ async fn run_signaling(
                 }
             }
         }
-        let mut _screen_capture = None;
         let attempt_config = config.clone();
         let connect = services::signaling::SignalingConnection::connect(&attempt_config);
         tokio::pin!(connect);
@@ -171,6 +175,7 @@ async fn run_signaling(
             Some((input, output)) => {
                 match crate::media::sfu::SfuSession::start(
                     user.clone(),
+                    &config.room,
                     input,
                     output,
                     state.local_user.is_muted || state.local_user.is_deafened,
@@ -203,7 +208,7 @@ async fn run_signaling(
 
         let _ = events.send(ClientEvent::Connected);
         state.backend_connected = true;
-        apply_signaling_event(joined, &mut state, &events);
+        apply_signaling_event(joined, &mut state, &events, chat_cipher.as_ref());
         if let Some(sfu) = sfu.as_mut() {
             let publishers = state
                 .participants
@@ -234,7 +239,9 @@ async fn run_signaling(
         let mut keepalive = tokio::time::interval(Duration::from_secs(30));
         let mut media_ticker = tokio::time::interval(Duration::from_millis(100));
         let mut metrics_ticker = tokio::time::interval(Duration::from_secs(1));
+        let mut screen_ticker = tokio::time::interval(Duration::from_millis(500));
         let mut connected_peers = HashSet::new();
+        let mut last_screen_at = None::<Instant>;
         let mut pending_routes =
             HashMap::<String, (u64, crate::media::sfu::Route, Instant, bool)>::new();
 
@@ -265,6 +272,20 @@ async fn run_signaling(
                                 }
                             }
                         }
+                        if let Some((user, frame)) = sfu.take_screen_frame() {
+                            if screen::valid_jpeg(&frame) {
+                                state.media.screen_user = Some(user);
+                                state.media.screen_frame = Some(frame);
+                                last_screen_at = Some(Instant::now());
+                                status_changed = true;
+                            }
+                        }
+                        if !state.media.screen_capture_active && last_screen_at.is_some_and(|time| time.elapsed() > Duration::from_secs(2)) {
+                            state.media.screen_frame = None;
+                            state.media.screen_user = None;
+                            last_screen_at = None;
+                            status_changed = true;
+                        }
                         if status_changed { publish_snapshot(&state, &events); }
                         for signal in sfu.take_signaling() {
                             if let Err(error) = connection.send(signal).await {
@@ -284,6 +305,17 @@ async fn run_signaling(
                         }
                     }
                     failed
+                }
+                _ = screen_ticker.tick(), if state.media.screen_capture_active && sfu.is_some() => {
+                    let device = state.media.selected_screen;
+                    if let Ok(Ok(frame)) = tokio::task::spawn_blocking(move || screen::capture_jpeg(device)).await {
+                        state.media.screen_user = Some(state.local_user.display_name.clone());
+                        state.media.screen_frame = Some(frame.clone());
+                        last_screen_at = Some(Instant::now());
+                        publish_snapshot(&state, &events);
+                        if let Some(sfu) = sfu.as_ref() { sfu.send_screen_frame(&frame).await; }
+                    }
+                    false
                 }
                 _ = metrics_ticker.tick() => {
                     let mut failed = false;
@@ -315,13 +347,19 @@ async fn run_signaling(
                         }
                         if let ClientCommand::SendChat { content } = &command {
                             let content = content.trim();
-                            if content.len() > 2000 {
-                                let _ = events.send(ClientEvent::ChatError("Mensagem limitada a 2.000 bytes.".into()));
+                            if content.len() > 1400 {
+                                let _ = events.send(ClientEvent::ChatError("Mensagem limitada a 1.400 bytes.".into()));
                                 false
                             } else if content.is_empty() {
                                 false
+                            } else if let Some(cipher) = chat_cipher.as_ref() {
+                                match cipher.seal(&state.local_user.display_name, content.as_bytes()) {
+                                    Ok(encrypted) => connection.send(serde_json::json!({"type":"chat","content":format!("e2e:{}", STANDARD.encode(encrypted))})).await.is_err(),
+                                    Err(error) => { let _ = events.send(ClientEvent::ChatError(error)); false }
+                                }
                             } else {
-                                connection.send(serde_json::json!({"type":"chat","content":content})).await.is_err()
+                                let _ = events.send(ClientEvent::ChatError("Configure PULSE_E2E_PASSPHRASE para enviar mensagens.".into()));
+                                false
                             }
                         } else {
                         let restart_capture = matches!(
@@ -337,10 +375,9 @@ async fn run_signaling(
                             sfu.set_muted(!state.joined_voice || state.local_user.is_muted || state.local_user.is_deafened);
                         }
                         if restart_capture { publish_snapshot(&state, &events); }
-                        if state.media.screen_capture_active {
-                            _screen_capture = start_screen_capture(&state);
-                        } else {
-                            _screen_capture = None;
+                        if !state.media.screen_capture_active {
+                            state.media.screen_frame = None;
+                            state.media.screen_user = None;
                         }
                         false
                         }
@@ -441,7 +478,7 @@ async fn run_signaling(
                                 }
                             }
                         }
-                        apply_signaling_event(event, &mut state, &events);
+                        apply_signaling_event(event, &mut state, &events, chat_cipher.as_ref());
                         false
                     }
                     Ok(None) => true,
@@ -563,6 +600,7 @@ fn apply_signaling_event(
     event: ServerEvent,
     state: &mut AppState,
     events: &broadcast::Sender<ClientEvent>,
+    chat_cipher: Option<&crate::media::e2e::Cipher>,
 ) {
     match event {
         ServerEvent::Authenticated { user } => state.local_user.display_name = user,
@@ -579,14 +617,29 @@ fn apply_signaling_event(
                 .retain(|participant| participant.display_name != user);
         }
         ServerEvent::Chat { from, content } => {
-            state.chat_messages.push_back(crate::state::ChatMessage {
-                is_self: from == state.local_user.display_name,
-                author: from,
-                content,
-                timestamp: chrono::Local::now().format("%H:%M").to_string(),
-            });
-            if state.chat_messages.len() > 200 {
-                state.chat_messages.pop_front();
+            let plaintext = chat_cipher
+                .zip(content.strip_prefix("e2e:"))
+                .and_then(|(cipher, encoded)| {
+                    STANDARD
+                        .decode(encoded)
+                        .ok()
+                        .and_then(|packet| cipher.open(&from, &packet).ok())
+                })
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            if let Some(content) = plaintext {
+                state.chat_messages.push_back(crate::state::ChatMessage {
+                    is_self: from == state.local_user.display_name,
+                    author: from,
+                    content,
+                    timestamp: chrono::Local::now().format("%H:%M").to_string(),
+                });
+                if state.chat_messages.len() > 200 {
+                    state.chat_messages.pop_front();
+                }
+            } else {
+                let _ = events.send(ClientEvent::ChatError(
+                    "Mensagem recebida sem chave E2E válida.".into(),
+                ));
             }
         }
         ServerEvent::Signal(value) => {

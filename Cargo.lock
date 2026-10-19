@@ -4157,6 +4157,7 @@ name = "pulse"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "cpal",
@@ -4164,10 +4165,12 @@ dependencies = [
  "env_logger",
  "futures-util",
  "iced",
+ "image 0.25.10",
  "log",
  "once_cell",
  "opus",
  "rand 0.8.8",
+ "ring",
  "rtc",
  "screenshots",
  "serde_json",

@@ -5,6 +5,7 @@ use std::{
 };
 
 use screenshots::Screen;
+use std::io::Cursor;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenDevice {
@@ -52,6 +53,32 @@ pub fn capture_screen(screen_id: usize) -> Result<(u32, u32, Vec<u8>), String> {
         .capture()
         .map_err(|error| format!("could not capture screen {screen_id}: {error}"))?;
     Ok((image.width(), image.height(), image.into_raw()))
+}
+
+pub fn capture_jpeg(screen_id: usize) -> Result<Vec<u8>, String> {
+    let (width, height, pixels) = capture_screen(screen_id)?;
+    let image = image::RgbaImage::from_raw(width, height, pixels)
+        .ok_or_else(|| "invalid screen image".to_owned())?;
+    let image = image::DynamicImage::ImageRgba8(image).thumbnail(640, 360);
+    for quality in [55, 40, 25] {
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
+            .encode_image(&image)
+            .map_err(|error| format!("could not encode screen frame: {error}"))?;
+        if jpeg.len() <= 48 * 1024 {
+            return Ok(jpeg);
+        }
+    }
+    Err("screen frame exceeds transport limit".into())
+}
+
+pub fn valid_jpeg(bytes: &[u8]) -> bool {
+    if bytes.len() > 48 * 1024 {
+        return false;
+    }
+    image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Jpeg)
+        .into_dimensions()
+        .is_ok_and(|(width, height)| width > 0 && height > 0 && width <= 640 && height <= 360)
 }
 
 pub fn start_capture(screen_id: usize) -> Result<ScreenCapture, String> {
