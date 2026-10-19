@@ -19,7 +19,7 @@ impl Cipher {
 
     pub fn from_key(key: &[u8; 32]) -> Result<Self, String> {
         let key = UnboundKey::new(&aead::CHACHA20_POLY1305, key)
-            .map_err(|_| "could not initialize end-to-end encryption")?;
+            .map_err(|_| "could not initialize media encryption")?;
         Ok(Self(LessSafeKey::new(key)))
     }
 

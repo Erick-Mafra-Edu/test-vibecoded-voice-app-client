@@ -657,7 +657,7 @@ fn apply_signaling_event(
                 }
             } else {
                 let _ = events.send(ClientEvent::ChatError(
-                    "Mensagem recebida sem chave E2E válida.".into(),
+                    "Mensagem recebida sem chave de sala válida.".into(),
                 ));
             }
         }

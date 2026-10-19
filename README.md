@@ -218,4 +218,4 @@ audio indicators in Settings while both clients are connected.
 - [ ] Validate WebRTC / Opus audio across separate computers and NAT
 - [x] Send encrypted JPEG screen frames over a WebRTC data channel
 - [x] Server/channel CRUD via REST API
-- [x] Shared passphrase encryption for voice, chat, and screen frames
+- [x] Media and chat encryption with backend-issued room keys or legacy shared passphrases
