@@ -71,7 +71,11 @@ pub fn top_bar<'a>(state: &'a AppState) -> Element<'a, Message> {
     ]
     .spacing(2);
 
-    let hud_widget = hud::hud(&state.metrics);
+    let hud_widget: Element<'a, Message> = if state.backend_room.is_some() {
+        Space::new().into()
+    } else {
+        hud::hud(&state.metrics)
+    };
 
     let bar = container(
         row![

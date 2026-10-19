@@ -27,14 +27,16 @@ pub fn channel_bar<'a>(state: &'a AppState) -> Element<'a, Message> {
         .enumerate()
         .map(|(i, ch)| channel_pill_text(ch, i, state.active_text_channel));
 
+    let mut channels = voice_channels.collect::<Vec<_>>();
+    if !state.text_channels.is_empty() {
+        channels.push(divider.into());
+        channels.extend(text_channels);
+    }
     let bar = container(
-        row(voice_channels
-            .chain(std::iter::once(divider.into()))
-            .chain(text_channels)
-            .collect::<Vec<_>>())
-        .spacing(4)
-        .align_y(iced::alignment::Vertical::Center)
-        .height(Length::Fill),
+        row(channels)
+            .spacing(4)
+            .align_y(iced::alignment::Vertical::Center)
+            .height(Length::Fill),
     )
     .style(|_| iced::widget::container::Style {
         background: Some(iced::Background::Color(Color {

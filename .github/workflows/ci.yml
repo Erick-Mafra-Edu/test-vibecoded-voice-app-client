@@ -17,6 +17,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test signaling
         run: cargo test --lib --locked
+      - name: Test token switching
+        run: cargo test --bin pulse --locked changing_token_retries_immediately_after_authentication_failure
       - name: Build Windows client
         run: cargo build --release --locked
       - uses: actions/upload-artifact@v7

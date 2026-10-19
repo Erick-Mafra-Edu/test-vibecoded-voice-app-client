@@ -47,9 +47,17 @@ pub fn settings_screen<'a>(state: &'a AppState) -> Element<'a, Message> {
     .placeholder("Select display")
     .width(Length::Fixed(360.0));
     let token_selector = pick_list(
-        state.auth_tokens.clone(),
-        state.selected_auth_token.clone(),
-        Message::AuthTokenSelected,
+        (0..state.auth_tokens.len())
+            .map(TokenOption)
+            .collect::<Vec<_>>(),
+        state.selected_auth_token.as_ref().and_then(|selected| {
+            state
+                .auth_tokens
+                .iter()
+                .position(|token| token == selected)
+                .map(TokenOption)
+        }),
+        |option| Message::AuthTokenSelected(option.0),
     )
     .placeholder("Select configured token")
     .width(Length::Fixed(360.0));
@@ -109,6 +117,40 @@ pub fn settings_screen<'a>(state: &'a AppState) -> Element<'a, Message> {
                 Palette::TEXT_SECONDARY
             }),
             state
+                .backend_room
+                .as_ref()
+                .map(|_| {
+                    text(if state.media.voice_connected {
+                        "Audio WebRTC conectado ao outro participante"
+                    } else {
+                        "Audio WebRTC aguardando conexão com outro participante"
+                    })
+                    .size(13)
+                    .color(if state.media.voice_connected {
+                        Palette::SUCCESS
+                    } else {
+                        Palette::AMBER
+                    })
+                })
+                .unwrap_or_else(|| text("")),
+            state
+                .backend_room
+                .as_ref()
+                .map(|_| {
+                    text(if state.media.remote_audio_received {
+                        "Áudio remoto recebido"
+                    } else {
+                        "Nenhum pacote de áudio remoto recebido"
+                    })
+                    .size(13)
+                    .color(if state.media.remote_audio_received {
+                        Palette::SUCCESS
+                    } else {
+                        Palette::TEXT_SECONDARY
+                    })
+                })
+                .unwrap_or_else(|| text("")),
+            state
                 .media
                 .last_error
                 .as_deref()
@@ -130,4 +172,13 @@ pub fn settings_screen<'a>(state: &'a AppState) -> Element<'a, Message> {
     .width(Length::Fill)
     .align_x(iced::alignment::Horizontal::Center)
     .into()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TokenOption(usize);
+
+impl std::fmt::Display for TokenOption {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Token {}", self.0 + 1)
+    }
 }

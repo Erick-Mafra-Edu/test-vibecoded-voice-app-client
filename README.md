@@ -79,27 +79,41 @@ cargo run
 ```
 
 Para abrir duas instâncias usando os dois usuários de teste, abra dois
-terminais na pasta do cliente e passe o token diretamente na linha de comando:
+terminais na pasta do cliente e passe o token diretamente na linha de comando.
+Depois de `cargo build`, use o mesmo executável em ambos os terminais:
 
 ```powershell
 # Terminal 1
-cargo run -- --token-slot 1
+.\target\debug\pulse.exe --token-slot 1
 
 # Terminal 2
-cargo run -- --token-slot 2
+.\target\debug\pulse.exe --token-slot 2
 ```
 
 O parâmetro `--token-slot` seleciona `PULSE_AUTH_TOKEN_1` ou
 `PULSE_AUTH_TOKEN_2` depois que o `.env` é carregado. Os parâmetros `--token`,
 `--room` e `--signal-url` também substituem apenas essas variáveis na instância
 iniciada. Assim, as duas janelas podem usar tokens diferentes sem alterar o
-`.env` nem depender da tela de configurações.
+`.env` nem depender da tela de configurações. Execute os comandos a partir da
+pasta do cliente para que ambas as instâncias encontrem o `.env`. Também é
+possível definir `PULSE_AUTH_TOKEN` separadamente em cada terminal ou usar
+`--token <valor>`.
 
-When all three variables are present, the runtime authenticates, joins the
-configured room, tracks presence events, and sends a `members` keepalive every
-30 seconds. When they are absent, the simulation backend remains active.
-Tokens are intentionally read only from the environment and are never stored
-in the repository or logged.
+With `PULSE_SIGNAL_URL` and `PULSE_ROOM` configured, the runtime connects after
+a token is provided through the environment, command line, or Settings. It
+then tracks presence and sends a `members` keepalive every 30 seconds. Without
+the URL or room, the simulation backend remains active and the offline notice
+explains why token changes cannot connect. Tokens are never stored in the
+repository or logged.
+
+No modo conectado, a interface mostra apenas a sala configurada por `PULSE_ROOM`
+e os participantes informados pelo servidor. O backend atual não fornece lista
+de salas, chat ou métricas de latência; por isso esses dados de demonstração
+ficam ocultos. Em Settings, `Audio WebRTC conectado` e `Áudio remoto recebido`
+ajudam a distinguir presença no WebSocket do transporte de voz. Se duas janelas
+forem abertas no mesmo computador, use fones de ouvido para evitar microfonia.
+Após alterações no código, feche ambas e execute `cargo build --locked` antes
+de iniciá-las novamente.
 
 The client loads `.env` automatically when present. To diagnose the local
 Docker endpoint without revealing the token, run:
@@ -131,7 +145,10 @@ second token). The server must allow both credentials into the same room.
 The Settings screen includes backend authentication controls for local testing.
 `PULSE_AUTH_TOKEN_1` and `PULSE_AUTH_TOKEN_2` are loaded as selectable options,
 and a token can also be pasted manually. Applying a token closes the current
-WebSocket and reconnects with the new credential. Keep `.env` local and never
+WebSocket and reconnects with the new credential. The selector labels tokens
+without displaying their values. The offline banner stays visible while the
+client uses demonstration data or waits for the backend; authentication errors
+appear in Settings. Keep `.env` local and never
 commit real or test credentials.
 
 ## Building
@@ -171,10 +188,11 @@ cargo run -- --validate-media
 ```
 
 This validates local capture only. The signaling integration test does not
-verify WebRTC/Opus audio or screen transmission.
+verify WebRTC/Opus audio or screen transmission; check the two audio indicators
+in Settings while both clients are connected.
 
 ## Roadmap
-- [ ] Real audio transport (WebRTC / Opus)
+- [ ] Validate WebRTC / Opus audio across separate computers and NAT
 - [ ] Stream screen frames through the signaling/media transport
 - [ ] Server/channel CRUD via REST API
 - [ ] E2E encryption

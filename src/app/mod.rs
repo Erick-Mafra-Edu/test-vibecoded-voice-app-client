@@ -2,10 +2,14 @@
 
 pub mod messages;
 
-use iced::{Element, Subscription, Task, Theme};
+use iced::{
+    widget::{column, pick_list, text},
+    Element, Length, Subscription, Task, Theme,
+};
 use tokio_stream::{Stream, StreamExt};
 
 use crate::{
+    components::modal,
     runtime::{self, ClientCommand, ClientEvent},
     screens::{home, overlay, screen_share, settings},
     state::{AppMode, AppState, ChatMessage},
@@ -22,14 +26,37 @@ pub use messages::Message;
 pub struct PulseApp {
     pub state: AppState,
     runtime: runtime::RuntimeHandle,
+    device_modal_open: bool,
 }
 
 impl PulseApp {
     /// `run_with` constructor — returns (Self, Task).
     pub fn new() -> (Self, Task<Message>) {
-        let state = AppState::default();
+        let mut state = AppState::default();
+        match crate::services::signaling::SignalingConfig::from_env() {
+            None => {
+                state.connection_notice =
+                    Some("Modo offline: dados de demonstração, sem conexão ao backend.".into());
+            }
+            Some(config) => {
+                state.use_backend_room(&config.room);
+                if config.token.trim().is_empty() {
+                    state.connection_notice =
+                        Some("Offline: selecione um token para conectar.".into());
+                } else {
+                    state.connection_notice = Some("Conectando ao backend...".into());
+                }
+            }
+        }
         let runtime = runtime::spawn(&state);
-        (Self { state, runtime }, Task::none())
+        (
+            Self {
+                state,
+                runtime,
+                device_modal_open: false,
+            },
+            Task::none(),
+        )
     }
 
     // ─────────────────────────────────────────────────────────
@@ -108,11 +135,18 @@ impl PulseApp {
             Message::RefreshMediaDevices => {
                 self.runtime.send(ClientCommand::RefreshMediaDevices);
             }
-            Message::AuthTokenSelected(token) => {
-                self.state.selected_auth_token = Some(token.clone());
-                self.state.auth_token_input.clear();
-                self.state.auth_token_error = None;
-                self.runtime.send(ClientCommand::SetAuthToken(token));
+            Message::OpenDeviceModal => {
+                self.device_modal_open = true;
+            }
+            Message::CloseModal => self.device_modal_open = false,
+            Message::AuthTokenSelected(index) => {
+                if let Some(token) = self.state.auth_tokens.get(index).cloned() {
+                    self.state.selected_auth_token = Some(token.clone());
+                    self.state.auth_token_input.clear();
+                    self.state.auth_token_error = None;
+                    self.state.connection_notice = Some("Conectando ao backend...".into());
+                    self.runtime.send(ClientCommand::SetAuthToken(token));
+                }
             }
             Message::AuthTokenInputChanged(input) => {
                 self.state.auth_token_input = input;
@@ -129,6 +163,7 @@ impl PulseApp {
                     self.state.selected_auth_token = Some(token.clone());
                     self.state.auth_token_input.clear();
                     self.state.auth_token_error = None;
+                    self.state.connection_notice = Some("Conectando ao backend...".into());
                     self.runtime.send(ClientCommand::SetAuthToken(token));
                 }
             }
@@ -187,14 +222,56 @@ impl PulseApp {
     // ─────────────────────────────────────────────────────────
 
     pub fn view(&self) -> Element<'_, Message> {
-        match self.state.mode {
+        let screen = match self.state.mode {
             AppMode::ScreenShare => screen_share::screen_share_screen(&self.state),
             AppMode::Overlay => overlay::overlay_screen(&self.state),
             AppMode::Normal if self.state.nav_tab == crate::state::NavTab::Settings => {
                 settings::settings_screen(&self.state)
             }
             AppMode::Normal => home::home_screen(&self.state),
+        };
+
+        let screen = if let Some(notice) = &self.state.connection_notice {
+            column![
+                iced::widget::container(text(notice).color(crate::theme::Palette::BG_BASE))
+                    .width(Length::Fill)
+                    .padding(8)
+                    .style(|_| iced::widget::container::Style {
+                        background: Some(iced::Background::Color(crate::theme::Palette::AMBER)),
+                        ..Default::default()
+                    }),
+                screen,
+            ]
+            .into()
+        } else {
+            screen
+        };
+
+        if !self.device_modal_open {
+            return screen;
         }
+
+        let devices = column![
+            text("Microphone"),
+            pick_list(
+                self.state.media.input_devices.clone(),
+                self.state.media.selected_input.clone(),
+                Message::InputDeviceSelected,
+            )
+            .placeholder("Select microphone")
+            .width(Length::Fill),
+            text("Speakers"),
+            pick_list(
+                self.state.media.output_devices.clone(),
+                self.state.media.selected_output.clone(),
+                Message::OutputDeviceSelected,
+            )
+            .placeholder("Select speakers")
+            .width(Length::Fill),
+        ]
+        .spacing(10);
+
+        modal::modal(screen, "Audio devices", devices.into(), Message::CloseModal)
     }
 
     // ─────────────────────────────────────────────────────────
@@ -202,7 +279,17 @@ impl PulseApp {
     // ─────────────────────────────────────────────────────────
 
     pub fn subscription(&self) -> Subscription<Message> {
-        iced::Subscription::run_with(self.runtime.clone(), Self::runtime_events)
+        let runtime = iced::Subscription::run_with(self.runtime.clone(), Self::runtime_events);
+        let escape = self.device_modal_open.then(|| {
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::CloseModal),
+                _ => None,
+            })
+        });
+        Subscription::batch(std::iter::once(runtime).chain(escape))
     }
 
     fn apply_runtime_event(&mut self, event: ClientEvent) {
@@ -221,16 +308,49 @@ impl PulseApp {
                 self.state.joined_voice = false;
             }
             ClientEvent::Snapshot(snapshot) => {
+                self.state.backend_connected = snapshot.backend_connected;
+                if snapshot.backend_connected {
+                    self.state.connection_notice = None;
+                } else if self.state.connection_notice.is_none() {
+                    self.state.connection_notice =
+                        Some("Offline: sem conexão com o backend.".into());
+                }
                 self.state.tick = snapshot.tick;
                 self.state.joined_voice = snapshot.joined_voice;
+                self.state.local_user = snapshot.local_user;
                 self.state.participants = snapshot.participants;
+                if self.state.backend_room.is_some() {
+                    self.state.voice_channels[0].user_count =
+                        self.state.participants.len() + usize::from(self.state.joined_voice);
+                }
                 self.state.metrics = snapshot.metrics;
                 self.state.chat_messages = snapshot.chat_messages.into_iter().collect();
                 self.state.media = snapshot.media;
             }
-            ClientEvent::Connected => {}
+            ClientEvent::Connected => {
+                self.state.auth_token_error = None;
+                self.state.connection_notice = None;
+            }
+            ClientEvent::SimulationMode => {
+                self.state.connection_notice =
+                    Some("Modo offline: dados de demonstração, sem conexão ao backend.".into());
+            }
+            ClientEvent::ConnectionFailed(error) => {
+                self.state.auth_token_error = Some(error);
+                self.state.connection_notice = Some(
+                    if self.state.backend_room.is_some() {
+                        "Offline: sem conexão com o backend."
+                    } else {
+                        "Modo offline: dados de demonstração, sem conexão ao backend."
+                    }
+                    .into(),
+                );
+            }
             ClientEvent::MediaError(error) => {
                 self.state.media.last_error = Some(error);
+            }
+            ClientEvent::ChatError(error) => {
+                self.state.connection_notice = Some(error);
             }
         }
     }

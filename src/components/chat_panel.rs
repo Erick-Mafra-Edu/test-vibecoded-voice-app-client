@@ -20,7 +20,9 @@ pub fn chat_panel<'a>(state: &'a AppState) -> Element<'a, Message> {
                 .font(Fonts::BOLD)
                 .color(Palette::TEXT_PRIMARY),
             Space::new().width(Length::Fill),
-            text("♙  12").size(12).color(Palette::TEXT_SECONDARY),
+            text(format!("♙  {}", state.participants.len() + 1))
+                .size(12)
+                .color(Palette::TEXT_SECONDARY),
             button(text("✕").size(13))
                 .on_press(Message::ChatVisibilityToggle)
                 .style(theme::btn_ghost)

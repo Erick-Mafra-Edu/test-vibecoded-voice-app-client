@@ -47,7 +47,7 @@ pub fn home_screen<'a>(state: &'a AppState) -> Element<'a, Message> {
     };
 
     // ── Main content area (grid + chat) ──────────────────────────────────────
-    let content = row![
+    let content: Element<'a, Message> = row![
         container(voice_grid)
             .width(Length::FillPortion(7))
             .height(Length::Fill),
@@ -57,7 +57,8 @@ pub fn home_screen<'a>(state: &'a AppState) -> Element<'a, Message> {
     ]
     .height(Length::Fill)
     .width(Length::Fill)
-    .spacing(8);
+    .spacing(8)
+    .into();
 
     // ── Dock (bottom center float) ──────────────────────────────────────────
     let dock_widget = dock::dock(state);
@@ -126,10 +127,13 @@ fn voice_participant_grid<'a>(state: &'a AppState) -> Element<'a, Message> {
                 .size(14)
                 .font(Fonts::BOLD)
                 .color(Palette::TEXT_PRIMARY),
-            text(format!("({})", state.participants.len()))
-                .size(14)
-                .font(Fonts::BOLD)
-                .color(Palette::CYAN),
+            text(format!(
+                "({})",
+                state.participants.len() + usize::from(state.backend_room.is_some())
+            ))
+            .size(14)
+            .font(Fonts::BOLD)
+            .color(Palette::CYAN),
             text(format!("· {}", ch.name))
                 .size(12)
                 .color(Palette::TEXT_SECONDARY),
@@ -178,7 +182,7 @@ fn empty_voice_state<'a>(_state: &'a AppState) -> Element<'a, Message> {
             text("Pick a voice channel above to join")
                 .size(13)
                 .color(Palette::TEXT_SECONDARY),
-            iced::widget::button(text("Join General").size(14).color(Palette::BG_BASE),)
+            iced::widget::button(text("Join voice").size(14).color(Palette::BG_BASE),)
                 .on_press(Message::JoinVoice)
                 .style(theme::btn_primary)
                 .padding([10, 24]),
@@ -264,9 +268,12 @@ fn profile_panel<'a>(state: &'a AppState) -> Element<'a, Message> {
                 .font(Fonts::BOLD)
                 .color(Palette::TEXT_PRIMARY),
             text(if state.joined_voice {
-                "●  Online · Quads Central"
+                format!(
+                    "●  Online · {}",
+                    state.voice_channels[state.active_voice_channel].name
+                )
             } else {
-                "○  Offline"
+                "○  Offline".to_owned()
             })
             .size(13)
             .color(Palette::SUCCESS),

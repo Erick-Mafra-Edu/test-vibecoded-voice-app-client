@@ -138,12 +138,18 @@ pub fn dock<'a>(state: &'a AppState) -> Element<'a, Message> {
         .style(theme::btn_ghost)
         .padding([8, 12]);
 
+    let devices_btn = button(icon(Icon::Speaker, 18.0))
+        .on_press(Message::OpenDeviceModal)
+        .style(theme::btn_ghost)
+        .padding([8, 12]);
+
     let dock_row = row![
         profile,
         Space::new().width(Length::Fill),
         mute_btn,
         deaf_btn,
         screen_btn,
+        devices_btn,
         settings_btn,
         leave_btn,
         container(iced::widget::rule::vertical(1).style(theme::rule_subtle)).height(28),

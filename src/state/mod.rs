@@ -115,6 +115,8 @@ pub struct MediaState {
     pub selected_input: Option<String>,
     pub selected_output: Option<String>,
     pub capture_active: bool,
+    pub voice_connected: bool,
+    pub remote_audio_received: bool,
     pub screens: Vec<String>,
     pub selected_screen: usize,
     pub screen_capture_active: bool,
@@ -184,6 +186,9 @@ pub struct AppState {
     pub selected_auth_token: Option<String>,
     pub auth_token_input: String,
     pub auth_token_error: Option<String>,
+    pub connection_notice: Option<String>,
+    pub backend_connected: bool,
+    pub backend_room: Option<String>,
 
     // Chat
     pub chat_messages: VecDeque<ChatMessage>,
@@ -380,6 +385,11 @@ impl Default for AppState {
             auth_tokens,
             auth_token_input: String::new(),
             auth_token_error: None,
+            connection_notice: Some(
+                "Offline: conectando ao backend; dados de demonstração.".into(),
+            ),
+            backend_connected: false,
+            backend_room: None,
             chat_messages,
             chat_input: String::new(),
             chat_visible: true,
@@ -393,5 +403,45 @@ impl Default for AppState {
             },
             tick: 0,
         }
+    }
+}
+
+impl AppState {
+    pub fn use_backend_room(&mut self, room: &str) {
+        self.backend_room = Some(room.to_owned());
+        self.servers = vec![Server {
+            id: 1,
+            name: "BeamVoice".into(),
+            icon: '◈',
+        }];
+        self.voice_channels = vec![Channel {
+            id: 1,
+            name: room.to_owned(),
+            kind: ChannelKind::Voice,
+            user_count: 0,
+        }];
+        self.text_channels.clear();
+        self.chat_messages.clear();
+        self.chat_visible = true;
+        self.participants.clear();
+        self.joined_voice = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_room_replaces_demo_content() {
+        let mut state = AppState::default();
+        state.use_backend_room("lab");
+        assert_eq!(state.voice_channels.len(), 1);
+        assert_eq!(state.voice_channels[0].name, "lab");
+        assert!(state.text_channels.is_empty());
+        assert!(state.chat_messages.is_empty());
+        assert!(state.chat_visible);
+        assert!(state.participants.is_empty());
+        assert!(!state.joined_voice);
     }
 }

@@ -18,6 +18,7 @@ pub enum ServerEvent {
     Members { members: Vec<String> },
     PeerJoined { user: String },
     PeerLeft { user: String },
+    Chat { from: String, content: String },
     Signal(Value),
     Error { reason: String },
 }
@@ -31,10 +32,10 @@ pub struct SignalingConnection {
 impl SignalingConfig {
     pub fn from_env() -> Option<Self> {
         let url = std::env::var("PULSE_SIGNAL_URL").ok()?;
-        let token = std::env::var("PULSE_AUTH_TOKEN").ok()?;
+        let token = std::env::var("PULSE_AUTH_TOKEN").unwrap_or_default();
         let room = std::env::var("PULSE_ROOM").ok()?;
 
-        if url.is_empty() || token.is_empty() || room.is_empty() {
+        if url.trim().is_empty() || room.trim().is_empty() {
             return None;
         }
 
@@ -128,6 +129,10 @@ fn parse_event(value: Value) -> Result<ServerEvent, String> {
         "peer_left" => Ok(ServerEvent::PeerLeft {
             user: required_string(&value, "user")?,
         }),
+        "chat" => Ok(ServerEvent::Chat {
+            from: required_string(&value, "from")?,
+            content: required_string(&value, "content")?,
+        }),
         "error" => Ok(ServerEvent::Error {
             reason: required_string(&value, "reason")?,
         }),
@@ -172,6 +177,14 @@ mod tests {
         assert!(matches!(
             parse_event(json!({"type": "members", "members": ["alice", "bob"]})),
             Ok(ServerEvent::Members { members }) if members == ["alice", "bob"]
+        ));
+    }
+
+    #[test]
+    fn chat_event_has_server_identity() {
+        assert!(matches!(
+            parse_event(json!({"type":"chat","from":"alice","content":"hello"})),
+            Ok(ServerEvent::Chat { from, content }) if from == "alice" && content == "hello"
         ));
     }
 
