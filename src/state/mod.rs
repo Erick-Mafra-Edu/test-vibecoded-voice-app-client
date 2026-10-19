@@ -120,6 +120,8 @@ pub struct MediaState {
     pub screens: Vec<String>,
     pub selected_screen: usize,
     pub screen_capture_active: bool,
+    pub screen_frame: Option<Vec<u8>>,
+    pub screen_user: Option<String>,
     pub last_error: Option<String>,
 }
 

@@ -106,10 +106,33 @@ the URL or room, the simulation backend remains active and the offline notice
 explains why token changes cannot connect. Tokens are never stored in the
 repository or logged.
 
+With an updated BeamVoice backend, each authenticated member receives the same
+random room key on join. Voice, chat, and screen sharing start without entering
+a phrase. The backend knows this key, so this is server-managed media encryption,
+not strict end-to-end encryption. Use `wss://` outside localhost because plain
+WebSocket exposes the token and room key.
+
+For an older backend without room-key negotiation, the legacy fallback requires
+the same room passphrase in each client before starting it:
+
+```powershell
+$env:PULSE_E2E_PASSPHRASE = "a shared phrase of at least 16 bytes"
+```
+
+Each legacy room derives a different key. Share the fallback phrase outside
+Pulse; anyone who knows it can read that room's media and chat.
+For connections across NAT, configure `PULSE_ICE_URL` (`stun:`, `turn:`, or
+`turns:`), and when using TURN set `PULSE_ICE_USERNAME` and
+`PULSE_ICE_CREDENTIAL`. The server uses the corresponding `BEAMVOICE_ICE_*`
+variables. A TURN service and reachable relay ports are required separately.
+The WebSocket URL remains `ws:` or `wss:` and the room can be a catalog channel
+such as `lab/general` once an administrator creates it through BeamVoice's
+`/api/servers` endpoints.
+
 No modo conectado, a interface mostra apenas a sala configurada por `PULSE_ROOM`
-e os participantes informados pelo servidor. O backend atual não fornece lista
-de salas, chat ou métricas de latência; por isso esses dados de demonstração
-ficam ocultos. Em Settings, `Audio WebRTC conectado` e `Áudio remoto recebido`
+e os participantes informados pelo servidor. O chat da sala é efêmero e cifrado;
+o HUD usa estatísticas WebRTC de RTT, jitter e perda. Em Settings,
+`Audio WebRTC conectado` e `Áudio remoto recebido`
 ajudam a distinguir presença no WebSocket do transporte de voz. Se duas janelas
 forem abertas no mesmo computador, use fones de ouvido para evitar microfonia.
 Após alterações no código, feche ambas e execute `cargo build --locked` antes
@@ -188,11 +211,11 @@ cargo run -- --validate-media
 ```
 
 This validates local capture only. The signaling integration test does not
-verify WebRTC/Opus audio or screen transmission; check the two audio indicators
-in Settings while both clients are connected.
+verify WebRTC/Opus audio, TURN traversal, or screen transmission; check the two
+audio indicators in Settings while both clients are connected.
 
 ## Roadmap
 - [ ] Validate WebRTC / Opus audio across separate computers and NAT
-- [ ] Stream screen frames through the signaling/media transport
-- [ ] Server/channel CRUD via REST API
-- [ ] E2E encryption
+- [x] Send encrypted JPEG screen frames over a WebRTC data channel
+- [x] Server/channel CRUD via REST API
+- [x] Media and chat encryption with backend-issued room keys or legacy shared passphrases

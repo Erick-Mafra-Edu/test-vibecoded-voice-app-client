@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use opus::{Application, Channels, Decoder, Encoder};
 use rtc::{
     media::Sample,
@@ -19,7 +19,7 @@ use rtc::{
     peer_connection::{
         configuration::{
             interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
-            RTCConfigurationBuilder,
+            RTCConfigurationBuilder, RTCIceServer,
         },
         sdp::RTCSessionDescription,
         transport::RTCIceCandidateInit,
@@ -32,6 +32,7 @@ use rtc::{
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use webrtc::{
+    data_channel::{DataChannel, DataChannelEvent},
     media_stream::{
         track_local::{static_sample::TrackLocalStaticSample, TrackLocal},
         track_remote::{TrackRemote, TrackRemoteEvent},
@@ -41,17 +42,20 @@ use webrtc::{
     },
 };
 
-use super::audio;
+use super::{audio, e2e::Cipher, playout::FrameQueue};
 
 const SAMPLE_RATE: usize = 48_000;
 const FRAME_SAMPLES: usize = 960;
 
 #[derive(Clone)]
 struct Handler {
-    decoded: mpsc::UnboundedSender<(String, Route, Vec<f32>)>,
+    decoded: mpsc::Sender<(String, Route, Vec<f32>)>,
     signaling: mpsc::UnboundedSender<Value>,
     status: mpsc::UnboundedSender<AudioStatus>,
     last_decoded: Arc<Mutex<HashMap<(String, Route), Instant>>>,
+    cipher: Arc<Cipher>,
+    screen_channels: Arc<Mutex<HashMap<String, Arc<dyn DataChannel>>>>,
+    screen_tx: mpsc::Sender<(String, Vec<u8>)>,
     target: CandidateTarget,
 }
 
@@ -75,6 +79,20 @@ enum CandidateTarget {
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for Handler {
+    async fn on_data_channel(&self, channel: Arc<dyn DataChannel>) {
+        if channel.label().await.ok().as_deref() != Some("screen") {
+            return;
+        }
+        if let CandidateTarget::Peer(user) = &self.target {
+            register_screen_channel(
+                user.clone(),
+                channel,
+                self.screen_channels.clone(),
+                self.screen_tx.clone(),
+                self.cipher.clone(),
+            );
+        }
+    }
     async fn on_ice_candidate(&self, event: webrtc::peer_connection::RTCPeerConnectionIceEvent) {
         if let Ok(candidate) = event.candidate.to_json() {
             let candidate = json!({
@@ -104,6 +122,7 @@ impl PeerConnectionEventHandler for Handler {
             CandidateTarget::Peer(user) => (user.clone(), Route::P2p),
         };
         let last_decoded = self.last_decoded.clone();
+        let cipher = self.cipher.clone();
         tokio::spawn(async move {
             let mut decoder = match Decoder::new(SAMPLE_RATE as u32, Channels::Mono) {
                 Ok(decoder) => decoder,
@@ -115,8 +134,12 @@ impl PeerConnectionEventHandler for Handler {
             let mut received_audio = false;
             while let Some(event) = track.poll().await {
                 if let TrackRemoteEvent::OnRtpPacket(packet) = event {
+                    let encoded = match cipher.open(&publisher, &packet.payload) {
+                        Ok(encoded) => encoded,
+                        Err(_) => continue,
+                    };
                     let mut pcm = vec![0.0f32; FRAME_SAMPLES];
-                    match decoder.decode_float(&packet.payload, &mut pcm, false) {
+                    match decoder.decode_float(&encoded, &mut pcm, false) {
                         Ok(samples) => {
                             if !received_audio {
                                 log::info!("first remote audio packet decoded");
@@ -128,7 +151,7 @@ impl PeerConnectionEventHandler for Handler {
                                 .lock()
                                 .unwrap()
                                 .insert((publisher.clone(), route), Instant::now());
-                            let _ = decoded.send((publisher.clone(), route, pcm));
+                            let _ = decoded.try_send((publisher.clone(), route, pcm));
                         }
                         Err(error) => log::debug!("Opus decode error: {error}"),
                     }
@@ -163,9 +186,13 @@ pub struct SfuSession {
     capture: audio::AudioCapture,
     playback: audio::AudioPlayback,
     peers: HashMap<String, Arc<dyn PeerConnection>>,
-    decoded_tx: mpsc::UnboundedSender<(String, Route, Vec<f32>)>,
+    decoded_tx: mpsc::Sender<(String, Route, Vec<f32>)>,
     active_routes: Arc<Mutex<HashMap<String, Route>>>,
     last_decoded: Arc<Mutex<HashMap<(String, Route), Instant>>>,
+    cipher: Arc<Cipher>,
+    screen_channels: Arc<Mutex<HashMap<String, Arc<dyn DataChannel>>>>,
+    screen_tx: mpsc::Sender<(String, Vec<u8>)>,
+    screen_rx: mpsc::Receiver<(String, Vec<u8>)>,
     metrics_previous: HashMap<String, (u64, i64, u64, Instant)>,
     signaling_tx: mpsc::UnboundedSender<Value>,
     signaling_rx: mpsc::UnboundedReceiver<Value>,
@@ -176,13 +203,17 @@ pub struct SfuSession {
 impl SfuSession {
     pub async fn start(
         user: String,
+        media_key: &[u8; 32],
         input: &str,
         output: &str,
         muted: bool,
     ) -> Result<(Self, Vec<Value>), String> {
+        let cipher = Arc::new(Cipher::from_key(media_key)?);
         let (capture, frames) = audio::start_capture_with_frames(input)?;
         let (playback, playback_frames) = audio::start_playback_with_frames(output)?;
-        let (decoded_tx, decoded_rx) = mpsc::unbounded_channel();
+        let (decoded_tx, decoded_rx) = mpsc::channel(8);
+        let (screen_tx, screen_rx) = mpsc::channel(2);
+        let screen_channels = Arc::new(Mutex::new(HashMap::new()));
         let active_routes = Arc::new(Mutex::new(HashMap::new()));
         let last_decoded = Arc::new(Mutex::new(HashMap::new()));
         let (signaling_tx, signaling_rx) = mpsc::unbounded_channel();
@@ -193,6 +224,8 @@ impl SfuSession {
         let sender_tracks = outbound_tracks.clone();
         let muted_flag = Arc::new(AtomicBool::new(muted));
         let sender_muted = muted_flag.clone();
+        let sender_cipher = cipher.clone();
+        let sender_user = user.clone();
         std::thread::Builder::new()
             .name("pulse-opus-uplink".to_owned())
             .spawn(move || {
@@ -221,6 +254,13 @@ impl SfuSession {
                         match encoder.encode_float(&pcm, &mut encoded) {
                             Ok(length) => {
                                 encoded.truncate(length);
+                                let encoded = match sender_cipher.seal(&sender_user, &encoded) {
+                                    Ok(encoded) => encoded,
+                                    Err(error) => {
+                                        log::warn!("{error}");
+                                        continue;
+                                    }
+                                };
                                 let sample = Sample {
                                     data: Bytes::from(encoded),
                                     duration: Duration::from_millis(20),
@@ -248,16 +288,48 @@ impl SfuSession {
         let playback_routes = active_routes.clone();
         tokio::spawn(async move {
             let mut decoded_rx = decoded_rx;
-            while let Some((user, route, frame)) = decoded_rx.recv().await {
-                if playback_routes
-                    .lock()
-                    .unwrap()
-                    .get(&user)
-                    .copied()
-                    .unwrap_or(Route::P2p)
-                    == route
-                {
-                    let _ = playback_sender.try_send(frame);
+            let mut queued = HashMap::<String, (Route, FrameQueue)>::new();
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    frame = decoded_rx.recv() => match frame {
+                        Some((user, route, frame)) => {
+                            if playback_routes.lock().unwrap().get(&user).copied()
+                                .unwrap_or(Route::P2p) == route {
+                                let entry = queued.entry(user).or_insert_with(|| (route, FrameQueue::default()));
+                                if entry.0 != route {
+                                    *entry = (route, FrameQueue::default());
+                                }
+                                entry.1.push(frame);
+                            }
+                        }
+                        None => break,
+                    },
+                    _ = tick.tick() => {
+                        {
+                            let routes = playback_routes.lock().unwrap();
+                            queued.retain(|user, (route, _)| {
+                                routes.get(user).copied().unwrap_or(Route::P2p) == *route
+                            });
+                        }
+                        let frames = queued.values_mut()
+                            .filter_map(|(_, queue)| queue.pop())
+                            .collect::<Vec<_>>();
+                        if !frames.is_empty() {
+                            let count = (frames.len() as f32).sqrt();
+                            let mut mixed = vec![0.0; FRAME_SAMPLES];
+                            for frame in frames {
+                                for (out, sample) in mixed.iter_mut().zip(frame) {
+                                    *out += sample / count;
+                                }
+                            }
+                            for sample in &mut mixed {
+                                *sample = sample.clamp(-1.0, 1.0);
+                            }
+                            let _ = playback_sender.try_send(mixed);
+                        }
+                    }
                 }
             }
         });
@@ -271,6 +343,10 @@ impl SfuSession {
             decoded_tx,
             active_routes,
             last_decoded,
+            cipher,
+            screen_channels,
+            screen_tx,
+            screen_rx,
             metrics_previous: HashMap::new(),
             signaling_tx,
             signaling_rx,
@@ -327,8 +403,20 @@ impl SfuSession {
         let registry =
             register_default_interceptors(rtc::interceptor::Registry::new(), &mut media_engine)
                 .map_err(|error| format!("interceptor setup failed: {error}"))?;
+        let mut configuration = RTCConfigurationBuilder::new();
+        if let Ok(url) = std::env::var("PULSE_ICE_URL") {
+            let server = RTCIceServer {
+                urls: vec![url],
+                username: std::env::var("PULSE_ICE_USERNAME").unwrap_or_default(),
+                credential: std::env::var("PULSE_ICE_CREDENTIAL").unwrap_or_default(),
+            };
+            server
+                .urls()
+                .map_err(|error| format!("invalid ICE server configuration: {error}"))?;
+            configuration = configuration.with_ice_servers(vec![server]);
+        }
         let pc = PeerConnectionBuilder::new()
-            .with_configuration(RTCConfigurationBuilder::new().build())
+            .with_configuration(configuration.build())
             .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
             .with_handler(Arc::new(Handler {
@@ -336,8 +424,12 @@ impl SfuSession {
                 signaling: self.signaling_tx.clone(),
                 status: self.status_tx.clone(),
                 last_decoded: self.last_decoded.clone(),
+                cipher: self.cipher.clone(),
+                screen_channels: self.screen_channels.clone(),
+                screen_tx: self.screen_tx.clone(),
                 target,
             }))
+            .with_data_channel_send_buffer_limit(128 * 1024)
             .with_udp_addrs(vec!["0.0.0.0:0"])
             .build()
             .await
@@ -365,6 +457,17 @@ impl SfuSession {
         let pc = self
             .new_peer(CandidateTarget::Peer(remote.to_owned()), true)
             .await?;
+        let channel = pc
+            .create_data_channel("screen", None)
+            .await
+            .map_err(|error| format!("could not create screen channel: {error}"))?;
+        register_screen_channel(
+            remote.to_owned(),
+            channel,
+            self.screen_channels.clone(),
+            self.screen_tx.clone(),
+            self.cipher.clone(),
+        );
         let offer = pc
             .create_offer(None)
             .await
@@ -457,6 +560,7 @@ impl SfuSession {
             .unwrap()
             .remove(&format!("peer:{remote}"));
         self.active_routes.lock().unwrap().remove(remote);
+        self.screen_channels.lock().unwrap().remove(remote);
         self.last_decoded
             .lock()
             .unwrap()
@@ -468,6 +572,33 @@ impl SfuSession {
             .lock()
             .unwrap()
             .insert(user.to_owned(), route);
+    }
+
+    pub async fn send_screen_frame(&self, jpeg: &[u8]) {
+        if jpeg.len() > 48 * 1024 {
+            return;
+        }
+        let Ok(packet) = self.cipher.seal(&self.user, jpeg) else {
+            return;
+        };
+        let channels = self
+            .screen_channels
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for channel in channels {
+            let _ = channel.try_send(BytesMut::from(packet.as_slice())).await;
+        }
+    }
+
+    pub fn take_screen_frame(&mut self) -> Option<(String, Vec<u8>)> {
+        let mut latest = None;
+        while let Ok(frame) = self.screen_rx.try_recv() {
+            latest = Some(frame);
+        }
+        latest
     }
 
     pub fn has_decoded_since(&self, user: &str, route: Route, since: Instant) -> bool {
@@ -613,6 +744,30 @@ impl SfuSession {
         }
         Ok(None)
     }
+}
+
+fn register_screen_channel(
+    user: String,
+    channel: Arc<dyn DataChannel>,
+    channels: Arc<Mutex<HashMap<String, Arc<dyn DataChannel>>>>,
+    received: mpsc::Sender<(String, Vec<u8>)>,
+    cipher: Arc<Cipher>,
+) {
+    channels
+        .lock()
+        .unwrap()
+        .insert(user.clone(), channel.clone());
+    tokio::spawn(async move {
+        while let Some(event) = channel.poll().await {
+            if let DataChannelEvent::OnMessage(message) = event {
+                if message.data.len() <= 64 * 1024 {
+                    if let Ok(jpeg) = cipher.open(&user, &message.data) {
+                        let _ = received.try_send((user.clone(), jpeg));
+                    }
+                }
+            }
+        }
+    });
 }
 
 impl Drop for SfuSession {

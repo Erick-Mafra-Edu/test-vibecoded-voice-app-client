@@ -1,7 +1,7 @@
 //! Screen share mode — full video area + compact participant strip.
 
 use iced::{
-    widget::{column, container, row, text, Space},
+    widget::{column, container, image, row, text, Space},
     Color, Element, Length,
 };
 
@@ -16,18 +16,30 @@ use crate::{
 };
 
 pub fn screen_share_screen<'a>(state: &'a AppState) -> Element<'a, Message> {
-    // Main "video" area (placeholder gradient)
-    let video_area = container(
+    let video_content: Element<'a, Message> = if let Some(frame) = &state.media.screen_frame {
+        column![
+            image(image::Handle::from_bytes(frame.clone()))
+                .width(Length::Fill)
+                .height(Length::Fill),
+            text(format!(
+                "Compartilhando: {}",
+                state.media.screen_user.as_deref().unwrap_or("participante")
+            ))
+            .size(13)
+            .color(Palette::TEXT_SECONDARY),
+        ]
+        .into()
+    } else {
         column![
             Space::new().height(Length::Fill),
             container(
                 column![
                     icon(Icon::Screen, 64.0),
-                    text("Screen Share — Vex Ryder")
+                    text("Aguardando compartilhamento de tela")
                         .size(20)
                         .font(Fonts::BOLD)
                         .color(Palette::TEXT_PRIMARY),
-                    text("Simulated feed • 1920×1080 @ 60fps")
+                    text("O vídeo aparece quando um participante compartilha a tela")
                         .size(13)
                         .color(Palette::TEXT_SECONDARY),
                 ]
@@ -39,22 +51,24 @@ pub fn screen_share_screen<'a>(state: &'a AppState) -> Element<'a, Message> {
             .width(Length::Fill),
             Space::new().height(Length::Fill),
         ]
-        .align_x(iced::alignment::Horizontal::Center),
-    )
-    .style(|_| iced::widget::container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.02, 0.04, 0.08))),
-        border: iced::Border {
-            color: Color {
-                a: 0.30,
-                ..Palette::CYAN
+        .align_x(iced::alignment::Horizontal::Center)
+        .into()
+    };
+    let video_area = container(video_content)
+        .style(|_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.02, 0.04, 0.08))),
+            border: iced::Border {
+                color: Color {
+                    a: 0.30,
+                    ..Palette::CYAN
+                },
+                width: 1.0,
+                radius: 12.0.into(),
             },
-            width: 1.0,
-            radius: 12.0.into(),
-        },
-        ..Default::default()
-    })
-    .height(Length::Fill)
-    .width(Length::Fill);
+            ..Default::default()
+        })
+        .height(Length::Fill)
+        .width(Length::Fill);
 
     // Compact participant strip (right sidebar)
     let participants_strip = container(

@@ -13,14 +13,31 @@ pub struct SignalingConfig {
 
 #[derive(Debug, Clone)]
 pub enum ServerEvent {
-    Authenticated { user: String },
-    Joined { user: String, members: Vec<String> },
-    Members { members: Vec<String> },
-    PeerJoined { user: String },
-    PeerLeft { user: String },
-    Chat { from: String, content: String },
+    Authenticated {
+        user: String,
+    },
+    Joined {
+        user: String,
+        members: Vec<String>,
+        media_key: Option<String>,
+    },
+    Members {
+        members: Vec<String>,
+    },
+    PeerJoined {
+        user: String,
+    },
+    PeerLeft {
+        user: String,
+    },
+    Chat {
+        from: String,
+        content: String,
+    },
     Signal(Value),
-    Error { reason: String },
+    Error {
+        reason: String,
+    },
 }
 
 pub struct SignalingConnection {
@@ -58,7 +75,7 @@ impl SignalingConnection {
             .await?
             .ok_or_else(|| "signaling closed during authentication".to_owned())?;
         if !matches!(authenticated, ServerEvent::Authenticated { .. }) {
-            return Err(format!("authentication rejected: {authenticated:?}"));
+            return Err("authentication rejected or unexpected response".into());
         }
 
         connection
@@ -119,6 +136,10 @@ fn parse_event(value: Value) -> Result<ServerEvent, String> {
         "joined" => Ok(ServerEvent::Joined {
             user: required_string(&value, "user")?,
             members: parse_members(&value)?,
+            media_key: value
+                .get("media_key")
+                .map(|_| required_string(&value, "media_key"))
+                .transpose()?,
         }),
         "members" => Ok(ServerEvent::Members {
             members: parse_members(&value)?,
@@ -188,6 +209,24 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn joined_event_accepts_room_key() {
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [7u8; 32]);
+        assert!(matches!(
+            parse_event(
+                json!({"type":"joined","user":"alice","members":["alice"],"media_key":encoded})
+            ),
+            Ok(ServerEvent::Joined {
+                media_key: Some(_),
+                ..
+            })
+        ));
+        assert!(
+            parse_event(json!({"type":"joined","user":"alice","members":[],"media_key":42}))
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires a running BeamVoice server and two test credentials"]
     async fn two_clients_join_and_track_presence() {
@@ -222,8 +261,10 @@ mod tests {
         .await
         .expect("first connection timed out")
         .expect("first connection failed");
-        let first_user = match joined {
-            ServerEvent::Joined { user, .. } => user,
+        let (first_user, first_key) = match joined {
+            ServerEvent::Joined {
+                user, media_key, ..
+            } => (user, media_key),
             _ => unreachable!(),
         };
         let (second, joined) = tokio::time::timeout(
@@ -234,8 +275,14 @@ mod tests {
         .expect("second connection timed out")
         .expect("second connection failed");
         let second_user = match joined {
-            ServerEvent::Joined { user, members } => {
+            ServerEvent::Joined {
+                user,
+                members,
+                media_key,
+            } => {
                 assert!(members.contains(&first_user));
+                assert_eq!(media_key, first_key);
+                assert!(media_key.is_some());
                 user
             }
             _ => unreachable!(),

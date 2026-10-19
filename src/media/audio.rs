@@ -138,7 +138,7 @@ pub fn start_playback_with_frames(
         .default_output_config()
         .map_err(|error| format!("could not read output configuration: {error}"))?;
     let (stop_sender, stop_receiver) = mpsc::sync_channel(1);
-    let (frame_sender, frame_receiver) = mpsc::sync_channel(32);
+    let (frame_sender, frame_receiver) = mpsc::sync_channel(4);
     thread::Builder::new()
         .name("pulse-audio-playback".to_owned())
         .spawn(move || run_playback(device, config, stop_receiver, frame_receiver))
@@ -183,6 +183,13 @@ fn run_playback(
         }
         if let Ok(frame) = frames.recv_timeout(std::time::Duration::from_millis(20)) {
             if let Ok(mut queue) = queue.lock() {
+                let max_samples = stream_config.sample_rate.0 as usize / 10;
+                let stale = queue
+                    .len()
+                    .saturating_add(frame.len())
+                    .saturating_sub(max_samples);
+                let stale = stale.min(queue.len());
+                queue.drain(..stale);
                 queue.extend(frame);
             }
         }
