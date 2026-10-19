@@ -42,7 +42,7 @@ use webrtc::{
     },
 };
 
-use super::{audio, e2e::Cipher};
+use super::{audio, e2e::Cipher, playout::FrameQueue};
 
 const SAMPLE_RATE: usize = 48_000;
 const FRAME_SAMPLES: usize = 960;
@@ -211,7 +211,7 @@ impl SfuSession {
         let cipher = Arc::new(Cipher::from_key(media_key)?);
         let (capture, frames) = audio::start_capture_with_frames(input)?;
         let (playback, playback_frames) = audio::start_playback_with_frames(output)?;
-        let (decoded_tx, decoded_rx) = mpsc::channel(256);
+        let (decoded_tx, decoded_rx) = mpsc::channel(8);
         let (screen_tx, screen_rx) = mpsc::channel(2);
         let screen_channels = Arc::new(Mutex::new(HashMap::new()));
         let active_routes = Arc::new(Mutex::new(HashMap::new()));
@@ -288,7 +288,7 @@ impl SfuSession {
         let playback_routes = active_routes.clone();
         tokio::spawn(async move {
             let mut decoded_rx = decoded_rx;
-            let mut latest = HashMap::<String, Vec<f32>>::new();
+            let mut queued = HashMap::<String, (Route, FrameQueue)>::new();
             let mut tick = tokio::time::interval(Duration::from_millis(20));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -297,16 +297,29 @@ impl SfuSession {
                         Some((user, route, frame)) => {
                             if playback_routes.lock().unwrap().get(&user).copied()
                                 .unwrap_or(Route::P2p) == route {
-                                latest.insert(user, frame);
+                                let entry = queued.entry(user).or_insert_with(|| (route, FrameQueue::default()));
+                                if entry.0 != route {
+                                    *entry = (route, FrameQueue::default());
+                                }
+                                entry.1.push(frame);
                             }
                         }
                         None => break,
                     },
                     _ = tick.tick() => {
-                        if !latest.is_empty() {
-                            let count = (latest.len() as f32).sqrt();
+                        {
+                            let routes = playback_routes.lock().unwrap();
+                            queued.retain(|user, (route, _)| {
+                                routes.get(user).copied().unwrap_or(Route::P2p) == *route
+                            });
+                        }
+                        let frames = queued.values_mut()
+                            .filter_map(|(_, queue)| queue.pop())
+                            .collect::<Vec<_>>();
+                        if !frames.is_empty() {
+                            let count = (frames.len() as f32).sqrt();
                             let mut mixed = vec![0.0; FRAME_SAMPLES];
-                            for frame in latest.drain().map(|(_, frame)| frame) {
+                            for frame in frames {
                                 for (out, sample) in mixed.iter_mut().zip(frame) {
                                     *out += sample / count;
                                 }
